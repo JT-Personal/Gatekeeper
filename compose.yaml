@@ -8,6 +8,13 @@ services:
       - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8080}:8080"
     environment:
       PORT: "8080"
+      AUTH_MODE: "${AUTH_MODE:-trusted}"
+      AUTH_ISSUER: "${AUTH_ISSUER:-}"
+      AUTH_CLIENT_ID: "${AUTH_CLIENT_ID:-}"
+      AUTH_CLIENT_SECRET: "${AUTH_CLIENT_SECRET:-}"
+      AUTH_APP_URL: "${AUTH_APP_URL:-}"
+      AUTH_ALLOWED_GROUP: "${AUTH_ALLOWED_GROUP:-gatekeeper-founders}"
+      AUTH_ADMIN_GROUP: "${AUTH_ADMIN_GROUP:-gatekeeper-admins}"
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
       POSTGRES_DB: gatekeeper

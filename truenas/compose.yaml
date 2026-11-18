@@ -1,6 +1,14 @@
 # Paste into TrueNAS SCALE Apps > Discover Apps > Install via YAML.
-# Set the database password and pick the Git ref before installing.
+# Set the database password and Authentik connection values before installing.
 x-gatekeeper-db-password: &db-password "replace-with-a-strong-unique-password"
+x-gatekeeper-auth: &gatekeeper-auth
+  AUTH_MODE: oidc
+  AUTH_ISSUER: "https://auth.example.com/application/o/gatekeeper/"
+  AUTH_CLIENT_ID: "replace-with-your-authentik-client-id"
+  AUTH_CLIENT_SECRET: "replace-with-your-authentik-client-secret"
+  AUTH_APP_URL: "https://gatekeeper.example.com"
+  AUTH_ALLOWED_GROUP: "gatekeeper-founders"
+  AUTH_ADMIN_GROUP: "gatekeeper-admins"
 
 services:
   gatekeeper:
@@ -9,8 +17,9 @@ services:
     pull_policy: build
     restart: unless-stopped
     ports:
-      - "18080:8080"
+      - "127.0.0.1:18080:8080"
     environment:
+      <<: *gatekeeper-auth
       PORT: "8080"
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"

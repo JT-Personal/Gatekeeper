@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   ArrowRight, BookOpen, Check, ChevronDown, ChevronRight, ChevronsUpDown, CircleHelp,
   ClipboardCheck, Database, Download, Factory, FileText, FlaskConical, FolderKanban,
-  GitBranch, HardDrive, LayoutDashboard, List, Menu, Plus, Search, Settings2, ShieldCheck,
+  GitBranch, HardDrive, LayoutDashboard, List, LogIn, LogOut, Menu, Plus, Search, Settings2, ShieldCheck, Wallet,
   Upload, X,
 } from 'lucide-react'
 import Dashboard from './Dashboard'
@@ -11,8 +11,10 @@ import DocumentModal from './DocumentModal'
 import RTMTable from './RTMTable'
 import DVPRTracker from './DVPRTracker'
 import GateReviews from './GateReviews'
+import Finance from './FinancePage'
 import { workspaceSchema, type GateId, type Project } from './domain'
 import { createProject } from './seed'
+import { demoFinanceActor, getLedger, validateFinanceChanges } from './finance'
 import { EmptyState, Modal, PageHeading } from './ui'
 import { useWorkspace } from './useWorkspace'
 
@@ -22,6 +24,7 @@ const navigation = [
   { id: 'rtm', label: 'Requirements & RTM', icon: GitBranch },
   { id: 'dvpr', label: 'DVP&R Tracker', icon: FlaskConical },
   { id: 'gates', label: 'Gate Reviews', icon: ClipboardCheck },
+  { id: 'finance', label: 'Founder Finance', icon: Wallet },
 ] as const
 
 type View = typeof navigation[number]['id']
@@ -43,7 +46,7 @@ function initials(owner: string) {
 
 export default function App() {
   const storage = useWorkspace()
-  const { workspace, update, mode } = storage
+  const { workspace, update, mode, session } = storage
   const [activeId, setActiveId] = useState(initialProjectId)
   const [view, setView] = useState<View>(currentView)
   const [gateId, setGateId] = useState<GateId>()
@@ -51,11 +54,16 @@ export default function App() {
   const [dialog, setDialog] = useState<Dialog>(null)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [notice, setNotice] = useState('')
+  const [signingOut, setSigningOut] = useState(false)
+  const [accountError, setAccountError] = useState('')
   const [search, setSearch] = useState('')
   const [importError, setImportError] = useState('')
   const [pendingImport, setPendingImport] = useState<{ name: string; workspace: typeof workspace } | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const project = workspace.projects.find((item) => item.id === activeId) ?? workspace.projects[0]
+  const protectedWorkspace = session?.mode === 'oidc'
+  const user = session?.user
+  const canDeleteProject = mode === 'local' || !project || getLedger(project).entries.length === 0
 
   function open(which: Dialog) {
     setSearch('')
@@ -67,7 +75,7 @@ export default function App() {
   useEffect(() => {
     const onHash = () => setView(currentView())
     const onKey = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && !document.querySelector('dialog[open]')) {
+      if (mode !== 'loading' && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && !document.querySelector('dialog[open]')) {
         event.preventDefault()
         setSearch('')
         setDialog('search')
@@ -79,7 +87,7 @@ export default function App() {
       window.removeEventListener('hashchange', onHash)
       window.removeEventListener('keydown', onKey)
     }
-  }, [])
+  }, [mode])
 
   useEffect(() => {
     if (!notice) return
@@ -122,7 +130,7 @@ export default function App() {
   }
 
   function removeProject() {
-    if (!project) return
+    if (!project || !canDeleteProject) return
     const projects = workspace.projects.filter((item) => item.id !== project.id)
     update({ ...workspace, projects })
     selectProject(projects[0]?.id ?? '')
@@ -159,12 +167,52 @@ export default function App() {
 
   function confirmImport() {
     if (!pendingImport) return
+    if (mode === 'server') {
+      const error = validateFinanceChanges(workspace, pendingImport.workspace, user ?? null)
+      if (error) {
+        setImportError(error)
+        return
+      }
+    }
     update(pendingImport.workspace)
     selectProject(pendingImport.workspace.projects[0]?.id ?? '')
     setPendingImport(null)
     setNotice('Workspace imported.')
   }
 
+  async function signOut() {
+    setAccountError('')
+    setSigningOut(true)
+    try {
+      const response = await fetch('/auth/logout', { method: 'POST' })
+      if (!response.ok) throw new Error('Sign-out failed.')
+      location.replace('/')
+    } catch {
+      setAccountError('Could not sign out. Try again.')
+      setSigningOut(false)
+    }
+  }
+
+  if (!session) return <AuthScreen title={storage.sessionError ? 'Sign-in status unavailable' : 'Opening Gatekeeper'}
+    description={storage.sessionError || 'Checking your workspace connection.'}>
+    {storage.sessionError && <button className="button primary" onClick={storage.retrySession}>Try again</button>}
+  </AuthScreen>
+
+  if (protectedWorkspace && !user) return <AuthScreen title="Sign in to Gatekeeper"
+    description="Use your founder account to access the program workspace and project finances.">
+    <a className="button primary" href="/auth/login"><LogIn size={17} /> Sign in with Authentik</a>
+  </AuthScreen>
+
+  if (mode === 'loading') return <AuthScreen title={storage.connectionError ? 'Shared workspace unavailable' : 'Opening Gatekeeper'}
+    description={storage.connectionError || 'Connecting to PostgreSQL.'}>
+    {storage.connectionError && <div className="inline-actions">
+      {!protectedWorkspace && <button className="button secondary" onClick={() => storage.useLocal()}>Use browser storage</button>}
+      {protectedWorkspace && <a className="button secondary" href="/auth/login">Sign in again</a>}
+      <button className="button primary" onClick={() => void storage.useServer()} disabled={storage.connecting}>Retry connection</button>
+    </div>}
+  </AuthScreen>
+
+  const accountName = user?.name ?? project?.owner ?? 'Workspace'
   const query = search.trim().toLowerCase()
   const matchedDocuments = project?.documents.filter((item) => !query ||
     [item.code, item.title, item.owner].some((value) => value.toLowerCase().includes(query))).slice(0, 7) ?? []
@@ -176,6 +224,8 @@ export default function App() {
     rtm: <RTMTable project={project} onChange={updateProject} />,
     dvpr: <DVPRTracker project={project} onChange={updateProject} />,
     gates: <GateReviews key={gateId} project={project} initialGate={gateId} onChange={updateProject} onOpenDocument={setDocumentId} />,
+    finance: <Finance project={project} onChange={updateProject} actor={user ?? demoFinanceActor}
+      readOnly={mode === 'server' && !user} />,
   }[view]
 
   return (
@@ -210,8 +260,11 @@ export default function App() {
             <button type="button" onClick={() => open('help')}><CircleHelp size={18} strokeWidth={1.8} />Workspace guide</button>
           </nav>
           <div className="sidebar-person">
-            <div className="avatar">{initials(project?.owner ?? '')}</div>
-            <div><strong>{project?.owner || 'Workspace'}</strong><span>Program owner</span></div>
+            <div className="avatar">{initials(accountName)}</div>
+            <div><strong>{accountName}</strong><span>{user ? user.role === 'admin' ? 'Finance admin' : 'Founder' : 'Program owner'}</span></div>
+            {user && <button className="icon-button sidebar-signout" type="button" aria-label="Sign out"
+              title={storage.dirty ? 'Save or export your changes before signing out' : 'Sign out'}
+              disabled={storage.dirty || signingOut} onClick={() => void signOut()}><LogOut size={17} /></button>}
           </div>
         </div>
       </aside>
@@ -232,35 +285,31 @@ export default function App() {
             </button>
             <button type="button" className="storage-indicator" onClick={() => open('data')} title="Storage settings">
               <span className={`connection-dot ${storage.saveError || storage.connectionError ? 'connection-error' : ''}`} />
-              <span>{mode === 'server' ? storage.saving ? 'Saving' : 'PostgreSQL' : mode === 'local' ? 'Browser storage' : 'Connecting'}</span>
+              <span>{mode === 'server' ? storage.saving ? 'Saving' : 'PostgreSQL' : 'Browser storage'}</span>
               <ChevronDown size={13} />
             </button>
           </div>
         </header>
 
         <main className="content" id="main-content">
+          {accountError && <div className="notice-bar" role="alert">{accountError}</div>}
           {storage.saveError && <div className="notice-bar" role="alert">
             <span>{storage.saveError.message}</span>
             <div className="notice-actions">
-              <button className="button secondary small-button" onClick={() => open('keep-draft')}>Keep draft in browser</button>
+              {protectedWorkspace
+                ? <button className="button secondary small-button" onClick={exportWorkspace}>Export draft</button>
+                : <button className="button secondary small-button" onClick={() => open('keep-draft')}>Keep draft in browser</button>}
+              {storage.saveError.reauthenticate && <a className="button secondary small-button" href="/auth/login"
+                target="_blank" rel="noreferrer">Sign in again</a>}
               {blocked
                 ? <button className="button secondary small-button" onClick={storage.resolveConflict}>Load shared copy</button>
                 : <button className="button secondary small-button" onClick={storage.retrySave}>Retry save</button>}
             </div>
           </div>}
           {mode === 'local' && storage.localWarning && <div className="notice-bar" role="status">{storage.localWarning}</div>}
-          {mode === 'loading' ? (
-            <section className="panel">
-              <EmptyState title={storage.connectionError ? 'Shared workspace unavailable' : 'Opening workspace'}
-                description={storage.connectionError || 'Checking the configured storage connection.'}
-                action={storage.connectionError && <div className="inline-actions">
-                  <button className="button secondary" onClick={() => storage.useLocal()}>Use browser storage</button>
-                  <button className="button primary" onClick={() => void storage.useServer()} disabled={storage.connecting}>Retry connection</button>
-                </div>} />
-            </section>
-          ) : content ? <div key={project.id + view}>{content}</div> : (
+          {content ? <div key={project.id + view}>{content}</div> : (
             <>
-              <PageHeading eyebrow="WORKSPACE" title="Projects" description="Run document control, traceability and gate reviews for every development program." />
+              <PageHeading eyebrow="WORKSPACE" title="Projects" description="Manage engineering work and founder finances for each development program." />
               <section className="panel"><EmptyState title="Create a project" description="Each project starts with the standard APQP document set."
                 action={<button className="button primary" onClick={() => open('new-project')}><Plus size={17} /> New project</button>} /></section>
             </>
@@ -280,15 +329,15 @@ export default function App() {
           </button>)}
         </div>
         <div className="form-actions">
-          {project && <button className="button secondary" disabled={mode === 'loading'} onClick={() => open('edit-project')}>Edit current project</button>}
-          <button className="button primary" disabled={mode === 'loading'} onClick={() => open('new-project')}><Plus size={17} /> New project</button>
+          {project && <button className="button secondary" onClick={() => open('edit-project')}>Edit current project</button>}
+          <button className="button primary" onClick={() => open('new-project')}><Plus size={17} /> New project</button>
         </div>
       </Modal>}
 
       {(dialog === 'new-project' || dialog === 'edit-project') && <ProjectForm
         project={dialog === 'edit-project' ? project : undefined}
         existingCodes={workspace.projects.filter((item) => dialog !== 'edit-project' || item.id !== project?.id).map((item) => item.code)}
-        onClose={() => setDialog(null)} onSave={saveProject} onDelete={removeProject}
+        onClose={() => setDialog(null)} onSave={saveProject} onDelete={canDeleteProject ? removeProject : undefined}
       />}
 
       {dialog === 'keep-draft' && <Modal title="Keep the shared draft in this browser"
@@ -302,25 +351,27 @@ export default function App() {
 
       {dialog === 'data' && <Modal title="Data & settings" description="Select the storage mode or move a workspace using a JSON backup." onClose={() => setDialog(null)}>
         <div className="storage-options">
-          <button type="button" className={`storage-option ${mode === 'local' ? 'option-selected' : ''}`}
+          {!protectedWorkspace && <button type="button" className={`storage-option ${mode === 'local' ? 'option-selected' : ''}`}
             disabled={storage.saving || storage.connecting || (mode === 'server' && storage.dirty)}
             onClick={() => storage.useLocal()}>
             <div className="list-icon"><HardDrive size={21} /></div><span><strong>Browser storage</strong><small>Saved in this browser. Works without a database.</small></span>
             {mode === 'local' && <Check size={19} className="text-green" />}
-          </button>
-          <button type="button" className={`storage-option ${mode === 'server' ? 'option-selected' : ''}`}
+          </button>}
+          {session.mode !== 'local' && <button type="button" className={`storage-option ${mode === 'server' ? 'option-selected' : ''}`}
             disabled={storage.connecting || mode === 'server'} onClick={() => void storage.useServer()}>
             <div className="list-icon"><Database size={21} /></div><span><strong>PostgreSQL</strong><small>{storage.serverAvailable === false ? 'Server unavailable · retry connection' : 'Shared workspace stored on the application server.'}</small></span>
             {mode === 'server' && <Check size={19} className="text-green" />}
-          </button>
+          </button>}
         </div>
         {storage.connectionError && <p role="alert" className="form-error">{storage.connectionError}</p>}
         <div className="settings-backup">
           <h3>Workspace backup</h3>
-          <p className="muted">Move projects between browsers and PostgreSQL. Import replaces the workspace in the active storage mode.</p>
+          <p className="muted">{mode === 'server'
+            ? 'Export a workspace backup or import engineering records. Existing finance history is preserved.'
+            : 'Move projects between browsers using a JSON backup. Import replaces this browser’s workspace.'}</p>
           <div className="inline-actions">
             <button type="button" className="button secondary" onClick={exportWorkspace}><Download size={17} /> Export JSON</button>
-            <button type="button" className="button secondary" disabled={mode === 'loading' || blocked} onClick={() => fileInput.current?.click()}><Upload size={17} /> Import JSON</button>
+            <button type="button" className="button secondary" disabled={blocked} onClick={() => fileInput.current?.click()}><Upload size={17} /> Import JSON</button>
             <input className="sr-only" tabIndex={-1} ref={fileInput} type="file" accept=".json,application/json" onChange={(event) => {
               void prepareImport(event.currentTarget.files?.[0])
               event.currentTarget.value = ''
@@ -354,6 +405,7 @@ export default function App() {
           <p><GitBranch size={19} /><span><strong>Establish traceability</strong>Link a system requirement to a DFMEA failure mode, then link a DVP&R test to that mode.</span></p>
           <p><FlaskConical size={19} /><span><strong>Record verification</strong>A requirement passes when all the tests linked through its failure modes pass. Any failed test marks it failed.</span></p>
           <p><List size={19} /><span><strong>Review a gate</strong>Approve or release its mandatory documents before recording sign-off.</span></p>
+          <p><Wallet size={19} /><span><strong>Track founder funding</strong>Record contributions and out-of-pocket expenses. Finance admins can record fund spending and reimbursements.</span></p>
         </div>
       </Modal>}
 
@@ -367,7 +419,7 @@ function ProjectForm({ project, existingCodes, onClose, onSave, onDelete }: {
   existingCodes: string[]
   onClose: () => void
   onSave: (project: Pick<Project, 'name' | 'code' | 'owner' | 'description'>) => void
-  onDelete: () => void
+  onDelete?: () => void
 }) {
   const [name, setName] = useState(project?.name ?? '')
   const [code, setCode] = useState(project?.code ?? '')
@@ -401,11 +453,12 @@ function ProjectForm({ project, existingCodes, onClose, onSave, onDelete }: {
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}
       <div className="form-actions">
-        {project && <button className="button ghost delete-project" type="button" onClick={() => setDeleteText('')}>Delete project</button>}
+        {project && onDelete && <button className="button ghost delete-project" type="button" onClick={() => setDeleteText('')}>Delete project</button>}
         <button className="button secondary" type="button" onClick={onClose}>Cancel</button>
         <button className="button primary" type="submit">{project ? 'Save changes' : 'Create project'}</button>
       </div>
-      {project && deleteText !== null && <div className="notice-bar import-confirm">
+      {project && !onDelete && <p className="muted project-retention">This project has finance history and is retained in the workspace.</p>}
+      {project && onDelete && deleteText !== null && <div className="notice-bar import-confirm">
         <label className="field">Type {project.code} to delete this project and all its records.
           <input className="input" value={deleteText} onChange={(event) => setDeleteText(event.target.value)} />
         </label>
@@ -413,4 +466,15 @@ function ProjectForm({ project, existingCodes, onClose, onSave, onDelete }: {
       </div>}
     </form>
   </Modal>
+}
+
+function AuthScreen({ title, description, children }: { title: string; description: string; children?: ReactNode }) {
+  return <main className="auth-screen">
+    <section className="panel auth-card" aria-labelledby="auth-title">
+      <div className="auth-brand"><div className="brand-mark"><ShieldCheck size={23} strokeWidth={2.2} /></div>Gatekeeper</div>
+      <h1 id="auth-title">{title}</h1>
+      <p className="muted">{description}</p>
+      {children && <div className="auth-actions">{children}</div>}
+    </section>
+  </main>
 }

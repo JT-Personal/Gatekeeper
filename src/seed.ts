@@ -1,4 +1,5 @@
 import { newId, type DocumentRecord, type DocumentStatus, type FailureMode, type GateId, type Project, type Requirement, type VerificationTest, type Workspace } from './domain.ts'
+import { demoFinanceActor, type FinanceEntry } from './finance.ts'
 
 type DocumentDefinition = {
   code: string
@@ -151,5 +152,28 @@ const tests: Omit<VerificationTest, 'id'>[] = [
 
 demo.tests = tests.map((test) => ({ ...test, id: test.code.toLowerCase() }))
 demo.signoffs = [{ gate: 1, by: 'Maya Chen', at: '2026-10-09T14:30:00Z', note: 'Approved for design and development.' }]
+
+const daniel = { id: 'demo-daniel', name: 'Daniel Park' }
+const financeRecords: [FinanceEntry['kind'], number, string, string, string, { id: string; name: string }][] = [
+  ['contribution', 185_000, '2026-10-12', 'Maya’s founding contribution', 'Funding', demoFinanceActor],
+  ['contribution', 115_000, '2026-10-13', 'Daniel’s founding contribution', 'Funding', daniel],
+  ['expense', 84_640, '2026-10-26', 'Prototype housing machining and materials', 'Prototypes', demoFinanceActor],
+  ['expense', 67_000, '2026-11-04', 'Dynamometer fixture and instrumentation', 'Test equipment', daniel],
+  ['reimbursement', 37_500, '2026-11-10', 'Partial reimbursement for prototype housings', 'Prototypes', demoFinanceActor],
+  ['reimbursement', 22_500, '2026-11-11', 'Partial reimbursement for test equipment', 'Test equipment', daniel],
+  ['fund-expense', 25_000, '2026-11-16', 'Environmental lab reservation deposit', 'Testing', demoFinanceActor],
+]
+
+demo.finance = {
+  currency: 'USD',
+  entries: financeRecords.map(([kind, amountMinor, date, description, category, member], index) => {
+    const recorder = kind === 'reimbursement' ? demoFinanceActor : member
+    return {
+      id: `${demo.id}:finance-${index + 1}`, kind, amountMinor, date, description, category,
+      memberId: member.id, memberName: member.name, recordedById: recorder.id, recordedByName: recorder.name,
+      createdAt: `${date}T15:00:00Z`,
+    }
+  }),
+}
 
 export const initialWorkspace: Workspace = { schemaVersion: 1, projects: [demo] }

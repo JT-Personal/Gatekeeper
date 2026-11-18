@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { financeLedgerSchema } from './finance.ts'
 
 export type GateId = 1 | 2 | 3 | 4 | 5
 
@@ -92,6 +93,7 @@ const projectSchema = z.object({
   failureModes: z.array(failureModeSchema),
   tests: z.array(verificationTestSchema),
   signoffs: z.array(signoffSchema),
+  finance: financeLedgerSchema.optional(),
 })
 
 export const workspaceSchema = z.object({
@@ -112,6 +114,7 @@ export const workspaceSchema = z.object({
   }
 
   uniqueRecords(workspace.projects, ['projects'])
+  unique(workspace.projects.flatMap((project) => project.finance?.entries.map((entry) => entry.id) ?? []), ['projects'], 'Ledger entry IDs must be unique across projects.')
   workspace.projects.forEach((project, projectIndex) => {
     const path = ['projects', projectIndex]
     uniqueRecords(project.documents, [...path, 'documents'])

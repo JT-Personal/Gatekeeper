@@ -255,3 +255,19 @@ textarea.input { resize: vertical; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
+
+.auth-screen {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: radial-gradient(ellipse at 86% 4%, #365b48 0%, #172923 55%);
+}
+.auth-card { width: min(100%, 440px); padding: clamp(24px, 6vw, 40px); box-shadow: 0 20px 64px #06191166; }
+.auth-brand { display: flex; align-items: center; gap: 10px; font-size: 19px; font-weight: 700; letter-spacing: -.035em; margin-bottom: 28px; }
+.auth-card h1 { font-size: clamp(26px, 5vw, 32px); font-weight: 720; letter-spacing: -.045em; line-height: 1.12; }
+.auth-card p { margin-top: 9px; font-size: 14px; line-height: 1.55; }
+.auth-actions { margin-top: 21px; }
+.sidebar-signout { margin-left: auto; color: #bad0c2; }
+.sidebar-signout:hover:not(:disabled) { background: #3e5c4d; color: white; }
+.project-retention { margin-top: 12px; font-size: 12px; }

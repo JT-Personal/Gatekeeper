@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { workspaceSchema, type Workspace } from './domain'
 import { initialWorkspace } from './seed'
+import { fetchSession, type Session } from './session'
 
 type Preference = 'auto' | 'local' | 'server'
 type Snapshot = { workspace: Workspace; revision: number }
 type ServerState = { saved: Snapshot; draft: Workspace }
-type SaveError = { message: string; conflict?: Snapshot }
+type SaveError = { message: string; conflict?: Snapshot; reauthenticate?: boolean }
 
 const DATA_KEY = 'gatekeeper.workspace.v1'
 const MODE_KEY = 'gatekeeper.storage'
@@ -41,7 +42,8 @@ function readSnapshot(payload: unknown): Snapshot {
 
 async function fetchSnapshot(signal?: AbortSignal) {
   const response = await fetch('/api/workspace', { cache: 'no-store', signal })
-  if (!response.ok) throw new Error('The PostgreSQL workspace is unavailable.')
+  if (response.status === 401) throw new Error('Sign in again to open the PostgreSQL workspace.')
+  if (!response.ok) throw new Error('Could not open the shared PostgreSQL workspace.')
   return readSnapshot(await response.json())
 }
 
@@ -50,7 +52,10 @@ export function useWorkspace() {
   const [local, setLocal] = useState(initial.workspace)
   const [localWarning, setLocalWarning] = useState(initial.warning)
   const [preference, setPreference] = useState(readPreference)
-  const [mode, setMode] = useState<'local' | 'server' | 'loading'>(() => preference === 'local' ? 'local' : 'loading')
+  const [mode, setMode] = useState<'local' | 'server' | 'loading'>('loading')
+  const [session, setSession] = useState<Session | null>(null)
+  const [sessionError, setSessionError] = useState('')
+  const [attempt, setAttempt] = useState(0)
   const [server, setServer] = useState<ServerState | null>(null)
   const [serverAvailable, setServerAvailable] = useState<boolean | null>(null)
   const [connectionError, setConnectionError] = useState('')
@@ -81,34 +86,48 @@ export function useWorkspace() {
 
   useEffect(() => {
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 4000)
+    const timeout = setTimeout(() => controller.abort(), 6000)
     const sequence = ++probe.current
 
-    fetchSnapshot(controller.signal).then((snapshot) => {
-      if (sequence !== probe.current) return
-      setServerAvailable(true)
-      setServer({ saved: snapshot, draft: snapshot.workspace })
-      if (preference !== 'local') {
-        setMode('server')
-        if (preference === 'auto') storePreference('server')
+    async function openWorkspace() {
+      let discovered: Session
+      try {
+        discovered = await fetchSession(controller.signal)
+      } catch {
+        if (sequence === probe.current) setSessionError('Could not check the workspace sign-in status.')
+        return
       }
-    }).catch(() => {
-      if (sequence !== probe.current) return
-      setServerAvailable(false)
-      if (preference === 'server') {
-        setConnectionError('Could not open the shared PostgreSQL workspace.')
-      } else {
-        setMode('local')
-      }
-    }).finally(() => clearTimeout(timeout))
 
+      if (sequence !== probe.current) return
+      setSession(discovered)
+      if (discovered.mode === 'oidc' && !discovered.user) return
+      if (discovered.mode === 'local' || (discovered.mode === 'trusted' && preference === 'local')) {
+        setMode('local')
+        return
+      }
+
+      try {
+        const snapshot = await fetchSnapshot(controller.signal)
+        if (sequence !== probe.current) return
+        setServerAvailable(true)
+        setServer({ saved: snapshot, draft: snapshot.workspace })
+        setMode('server')
+        if (discovered.mode === 'trusted' && preference === 'auto') storePreference('server')
+      } catch (error) {
+        if (sequence !== probe.current) return
+        setServerAvailable(false)
+        setConnectionError(error instanceof Error ? error.message : 'Could not open the shared PostgreSQL workspace.')
+      }
+    }
+
+    void openWorkspace().finally(() => clearTimeout(timeout))
     return () => {
       ++probe.current
       clearTimeout(timeout)
       controller.abort()
     }
-    // Initial auto-detection runs once. Explicit switches have their own connection flow.
-  }, [])
+    // Explicit storage switches use their own connection flow.
+  }, [attempt])
 
   const dirty = Boolean(server && server.saved.workspace !== server.draft)
   useEffect(() => {
@@ -128,11 +147,23 @@ export function useWorkspace() {
 
         if (response.status === 409) {
           const conflict = readSnapshot(await response.json())
-          setSaveError({ message: 'Another session saved changes. Keep this draft in browser storage or load the latest shared workspace.', conflict })
+          setSaveError({ message: 'Another session saved changes. Export this draft or load the latest shared workspace.', conflict })
           return
         }
         if (response.status === 413) {
           setSaveError({ message: 'The draft exceeds the 32 MB server limit. Export a backup or reduce the workspace before retrying.' })
+          return
+        }
+        if (response.status === 401) {
+          setSaveError({ message: 'Your session ended. Sign in again to save this draft, or export a backup.', reauthenticate: true })
+          return
+        }
+        if ([400, 403, 422].includes(response.status)) {
+          const payload: unknown = await response.json().catch(() => null)
+          const detail = typeof payload === 'object' && payload !== null && 'error' in payload && typeof payload.error === 'string'
+            ? payload.error
+            : 'The shared workspace rejected the update.'
+          setSaveError({ message: detail })
           return
         }
         if (!response.ok) throw new Error('The shared workspace could not be saved.')
@@ -170,6 +201,7 @@ export function useWorkspace() {
   }
 
   function useLocal(copyDraft = false) {
+    if (!session || session.mode === 'oidc') return
     ++probe.current
     setConnecting(false)
     if (copyDraft && server) writeLocal(server.draft)
@@ -180,6 +212,7 @@ export function useWorkspace() {
   }
 
   async function useServer() {
+    if (!session || session.mode === 'local' || (session.mode === 'oidc' && !session.user)) return
     const sequence = ++probe.current
     setConnecting(true)
     setConnectionError('')
@@ -190,7 +223,7 @@ export function useWorkspace() {
       setServerAvailable(true)
       setMode('server')
       setSaveError(null)
-      storePreference('server')
+      if (session.mode === 'trusted') storePreference('server')
     } catch {
       if (sequence !== probe.current) return
       setServerAvailable(false)
@@ -208,7 +241,11 @@ export function useWorkspace() {
   }
 
   return {
-    workspace, mode, update, serverAvailable, localWarning, connectionError, connecting,
+    workspace, mode, session, sessionError, update, serverAvailable, localWarning, connectionError, connecting,
+    retrySession: () => {
+      setSessionError('')
+      setAttempt((previous) => previous + 1)
+    },
     saveError, saving, dirty, useLocal, useServer, resolveConflict,
     retrySave: () => setSaveError(null),
   }

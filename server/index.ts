@@ -1,10 +1,14 @@
 import express, { type ErrorRequestHandler } from 'express';
 import { resolve } from 'node:path';
 import { z } from 'zod';
-import { workspaceSchema } from '../src/domain';
+import { workspaceSchema, type Workspace } from '../src/domain';
+import { stampFinanceChanges, validateFinanceChanges } from '../src/finance';
+import { initialWorkspace } from '../src/seed';
+import { authenticatedUser, mountAuth } from './auth';
 import { PostgresWorkspace } from './store';
 
 const port = readPort(process.env.PORT, 8080, 'PORT');
+const seed: Workspace = process.env.AUTH_MODE === 'trusted' ? initialWorkspace : { schemaVersion: 1, projects: [] };
 const database = process.env.POSTGRES_HOST
   ? new PostgresWorkspace({
       host: process.env.POSTGRES_HOST,
@@ -12,7 +16,7 @@ const database = process.env.POSTGRES_HOST
       user: process.env.POSTGRES_USER ?? 'gatekeeper',
       password: process.env.POSTGRES_PASSWORD,
       database: process.env.POSTGRES_DB ?? 'gatekeeper',
-    })
+    }, seed)
   : undefined;
 const app = express();
 const dist = resolve(process.cwd(), 'dist');
@@ -31,7 +35,13 @@ app.use('/api', (_request, response, next) => {
   next();
 });
 
+const auth = mountAuth(app, database, process.env);
+
 app.get('/api/health', async (_request, response) => {
+  if (!auth.configured) {
+    response.status(503).json({ status: 'misconfigured', storage: database ? 'postgres' : 'local' });
+    return;
+  }
   if (!database) {
     response.json({ status: 'ok', storage: 'local' });
     return;
@@ -39,6 +49,8 @@ app.get('/api/health', async (_request, response) => {
   await database.healthy();
   response.json({ status: 'ok', storage: 'postgres' });
 });
+
+app.use('/api', auth.protect);
 
 app.get('/api/workspace', async (_request, response) => {
   if (!database) {
@@ -58,13 +70,22 @@ app.put('/api/workspace', express.json({ limit: '32mb' }), async (request, respo
     response.status(400).json({ error: 'Invalid workspace update.', issues: parsed.error.issues.slice(0, 10) });
     return;
   }
-  const saved = await database.write(parsed.data);
-  if (saved) {
-    response.json(saved);
+  const actor = authenticatedUser(response);
+  const result = await database.write(parsed.data, (current, next) => {
+    const error = validateFinanceChanges(current, next, actor);
+    if (error) return { error };
+    return { workspace: stampFinanceChanges(current, next, new Date().toISOString()) };
+  });
+  if (result.status === 'denied') {
+    response.status(403).json({ code: 'finance_forbidden', error: result.error });
+    return;
+  }
+  if (result.status === 'saved') {
+    response.json(result.snapshot);
     return;
   }
   response.status(409).json({
-    ...(await database.read()),
+    ...result.snapshot,
     error: 'The shared workspace was changed by another session.',
   });
 });
