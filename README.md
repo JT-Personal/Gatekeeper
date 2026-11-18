@@ -1,6 +1,6 @@
 # Gatekeeper
 
-Gatekeeper tracks APQP documents, engineering requirements, DFMEA failure modes, and Design Verification Plan & Report (DVP&R) tests through five product development gates. Each project has its own document template, traceability matrix, and gate decisions. Founders can also track contributions, expenses, and reimbursements in a shared ledger.
+Gatekeeper tracks APQP documents, engineering requirements, DFMEA failure modes, and Design Verification Plan & Report (DVP&R) tests through five product development gates. Each project has its own document template, traceability matrix, and gate decisions. Project members can also split shared expenses and record payments between members by pay period.
 
 ## Run with Docker Compose
 
@@ -23,7 +23,7 @@ For a shared Docker installation, set `AUTH_MODE=oidc` in `.env`, complete the A
 
 ## Configure Authentik
 
-1. Create the `gatekeeper-founders` and `gatekeeper-admins` groups in Authentik, then assign each person their group. Membership in either group grants access. Membership in the admin group grants the administrator role. [Authentik group management](https://docs.goauthentik.io/users-sources/groups/manage_groups/).
+1. Create the `gatekeeper-members` and `gatekeeper-admins` groups in Authentik, then add people to the appropriate group. Membership in either group grants access. The admin group grants the Gatekeeper finance administrator role. [Authentik group management](https://docs.goauthentik.io/users-sources/groups/manage_groups/).
 2. Create an Authentik application with the slug `gatekeeper` and a confidential OAuth2/OpenID Connect provider. Keep the per-provider issuer mode. Register the exact redirect URI `https://gatekeeper.example.com/auth/callback`, substituting your Gatekeeper hostname. Use the `profile` and `email` scope mappings. The built-in `profile` mapping supplies the `groups` claim. Select an RSA **Signing Key** such as the default Authentik certificate so Gatekeeper can verify the ID token signature. [Authentik OAuth2 provider settings](https://docs.goauthentik.io/add-secure-apps/providers/oauth2/).
 3. Bind both groups to the Authentik application and set its policy engine mode to **Any**, so either group can reach the application. [Authentik application bindings](https://docs.goauthentik.io/add-secure-apps/applications/manage_apps/).
 4. Set the values below in `.env` for Docker Compose or in the TrueNAS YAML. Use the issuer value from the provider's OpenID configuration, including its trailing slash when present.
@@ -36,8 +36,10 @@ For a shared Docker installation, set `AUTH_MODE=oidc` in `.env`, complete the A
 | `AUTH_CLIENT_ID` | Confidential provider's client ID |
 | `AUTH_CLIENT_SECRET` | Confidential provider's client secret |
 | `AUTH_APP_URL` | The app's HTTPS origin. Example `https://gatekeeper.example.com` |
-| `AUTH_ALLOWED_GROUP` | Authentik founder group name. Default `gatekeeper-founders` |
+| `AUTH_ALLOWED_GROUP` | Authentik member group name. Leave blank to use `gatekeeper-members` |
 | `AUTH_ADMIN_GROUP` | Authentik administrator group name. Default `gatekeeper-admins` |
+
+Existing Authentik installations can continue using `gatekeeper-founders` by setting `AUTH_ALLOWED_GROUP=gatekeeper-founders` and binding that group to the application. When the setting is blank or omitted, Gatekeeper accepts both `gatekeeper-members` and the legacy `gatekeeper-founders` group.
 
 Gatekeeper sessions expire after eight hours. Authentik group changes apply at the next sign-in. Signing out revokes the current Gatekeeper session.
 
@@ -87,11 +89,13 @@ Use the application's import and export controls to move a versioned JSON worksp
 
 Shared document families can count toward more than one gate. Attachment entries record file details for reference.
 
-## Founder finance
+## Members and finance
 
-Open **Founder finance** from a project to see its pooled cash, contributions, spending, and reimbursements due. Use **Record contribution** for money already deposited into the pool and **Add expense** for a purchase paid personally. Entries are attributed to the signed-in founder.
+Open **Finance** in a project. Choose **Start first pay period** to open the ledger and select its currency. Other members choose **Join pay period** to add themselves to the roster before the first payment is recorded.
 
-Administrators can set the currency before the first entry, record expenses paid directly from pooled funds, and record reimbursement payments against a founder's outstanding balance. For corrections, founders can void their own personal entries and administrators can void any entry. Each void keeps the original record and its reason in the ledger.
+Use **Log expense** for a shared purchase you paid for. Gatekeeper splits expenses equally among the period's members and compares each member's share with what they paid. If you pay a $40 expense in a two-person period, the other member owes you $20. **Suggested payments** shows who should pay whom. After sending a payment, use **Record payment** to update the balances. A finance administrator can also record payments on behalf of members.
+
+A finance administrator can choose **Start new pay period** and select its members. The new period starts with an empty expense list. Settle the previous period first or choose to carry its unpaid balances. Carried balances appear under **Earlier balances**, and payments apply to the original period. Select a past pay period to review its read-only roster and expenses. **Previous ledger entries** preserves records from the earlier finance format for reference.
 
 Shared ledger edits require a signed-in Authentik account. Browser-local mode lets you try the ledger with the sample identity. The ledger is read-only in trusted Docker mode.
 

@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { financeLedgerSchema } from './finance.ts'
+import { payLedgerSchema } from './payPeriods.ts'
 
 export type GateId = 1 | 2 | 3 | 4 | 5
 
@@ -94,6 +95,7 @@ const projectSchema = z.object({
   tests: z.array(verificationTestSchema),
   signoffs: z.array(signoffSchema),
   finance: financeLedgerSchema.optional(),
+  payPeriods: payLedgerSchema.optional(),
 })
 
 export const workspaceSchema = z.object({

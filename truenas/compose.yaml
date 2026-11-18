@@ -7,7 +7,8 @@ x-gatekeeper-auth: &gatekeeper-auth
   AUTH_CLIENT_ID: "replace-with-your-authentik-client-id"
   AUTH_CLIENT_SECRET: "replace-with-your-authentik-client-secret"
   AUTH_APP_URL: "https://gatekeeper.example.com"
-  AUTH_ALLOWED_GROUP: "gatekeeper-founders"
+  # Blank uses gatekeeper-members and accepts the legacy gatekeeper-founders group.
+  AUTH_ALLOWED_GROUP: ""
   AUTH_ADMIN_GROUP: "gatekeeper-admins"
 
 services:

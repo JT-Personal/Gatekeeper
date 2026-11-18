@@ -177,12 +177,30 @@ function save(url, snapshot, cookie, origin = appOrigin) {
   });
 }
 
-function entry(kind, amountMinor, member, recorder = member) {
+const clientTimestamp = '2000-01-01T00:00:00.000Z';
+const entryDate = new Date().toISOString().slice(0, 10);
+
+function expense(member, amountMinor) {
   return {
-    id: randomUUID(), kind, amountMinor, date: '2026-11-18', description: 'Smoke test ledger entry',
-    memberId: member.id, memberName: member.name, recordedById: recorder.id, recordedByName: recorder.name,
-    createdAt: '2000-01-01T00:00:00.000Z',
+    id: randomUUID(), memberId: member.id, amountMinor, date: entryDate,
+    description: 'Smoke test expense', createdAt: clientTimestamp,
   };
+}
+
+function payment(payer, recipient, amountMinor) {
+  return {
+    id: randomUUID(), fromId: payer.id, toId: recipient.id, amountMinor, date: entryDate,
+    note: 'Smoke test payment', recordedById: payer.id, recordedByName: payer.name, createdAt: clientTimestamp,
+  };
+}
+
+function period(snapshot) {
+  return snapshot.workspace.projects[0].payPeriods.periods[0];
+}
+
+async function stored(response) {
+  assert.equal(response.status, 200, response.status === 200 ? undefined : await response.text());
+  return response.json();
 }
 
 try {
@@ -220,59 +238,91 @@ try {
   assert.equal((await fetch(`${url}/api/workspace`)).status, 401);
 
   await signIn(url, { subject: 'outsider', name: 'Outsider', groups: ['other-group'] }, 403);
-  await signIn(url, { subject: 'invalid-nonce', name: 'Invalid nonce', groups: ['gatekeeper-founders'], wrongNonce: true }, 400);
-  await signIn(url, { subject: 'invalid-signature', name: 'Invalid signature', groups: ['gatekeeper-founders'], invalidSignature: true }, 400);
-  const founder = await signIn(url, { subject: 'founder', name: 'Founder One', groups: ['gatekeeper-founders'] });
+  await signIn(url, { subject: 'invalid-nonce', name: 'Invalid nonce', groups: ['gatekeeper-members'], wrongNonce: true }, 400);
+  await signIn(url, { subject: 'invalid-signature', name: 'Invalid signature', groups: ['gatekeeper-members'], invalidSignature: true }, 400);
+  const member = await signIn(url, { subject: 'member', name: 'Member One', groups: ['gatekeeper-members'] });
+  const legacyMember = await signIn(url, { subject: 'legacy', name: 'Member Two', groups: ['gatekeeper-founders'] });
   const admin = await signIn(url, { subject: 'admin', name: 'Admin One', groups: ['gatekeeper-admins'], useUserInfo: true });
-  assert.equal(founder.user.role, 'founder');
+  assert.equal(member.user.role, 'founder');
+  assert.equal(legacyMember.user.role, 'founder');
   assert.equal(admin.user.role, 'admin');
 
-  const read = await fetch(`${url}/api/workspace`, { headers: { Cookie: founder.cookie } });
+  const restricted = await startApp({
+    ...pg, AUTH_MODE: 'oidc', AUTH_ISSUER: issuer, AUTH_CLIENT_ID: clientId, AUTH_CLIENT_SECRET: clientSecret,
+    AUTH_APP_URL: appOrigin, AUTH_ALLOWED_GROUP: 'gatekeeper-members', NODE_EXTRA_CA_CERTS: cert,
+  });
+  await signIn(restricted, { subject: 'legacy', name: 'Member Two', groups: ['gatekeeper-founders'] }, 403);
+
+  const read = await fetch(`${url}/api/workspace`, { headers: { Cookie: member.cookie } });
   const snapshot = await read.json();
   assert.deepEqual(snapshot, { revision: 0, workspace: { schemaVersion: 1, projects: [] } });
   snapshot.workspace.projects.push({
     id: 'auth-smoke-project', code: 'TEST-OIDC', name: 'OIDC QA project', description: '', owner: '',
     createdAt: new Date().toISOString(), documents: [], requirements: [], failureModes: [], tests: [], signoffs: [],
-    finance: { currency: 'USD', entries: [entry('expense', 200, founder.user), entry('contribution', 500, founder.user)] },
+    payPeriods: {
+      currency: 'USD',
+      periods: [{
+        id: randomUUID(), label: 'November QA', openedAt: clientTimestamp,
+        openedById: member.user.id, openedByName: member.user.name,
+        members: [{ id: member.user.id, name: member.user.name }], expenses: [], payments: [],
+      }],
+    },
   });
-  assert.equal((await save(url, snapshot, founder.cookie, 'https://cross-origin.test')).status, 403);
-  assert.equal((await save(url, snapshot, founder.cookie, '')).status, 403);
-  const saved = await save(url, snapshot, founder.cookie);
-  assert.equal(saved.status, 200);
-  const savedSnapshot = await saved.json();
-  const ledger = savedSnapshot.workspace.projects[0].finance;
-  assert.notEqual(ledger.entries[0].createdAt, '2000-01-01T00:00:00.000Z');
-  const spoofed = structuredClone(savedSnapshot);
-  spoofed.workspace.projects[0].finance.entries.push(entry('expense', 200, admin.user, founder.user));
-  assert.equal((await save(url, spoofed, founder.cookie)).status, 403);
+  assert.equal((await save(url, snapshot, member.cookie, 'https://cross-origin.test')).status, 403);
+  assert.equal((await save(url, snapshot, member.cookie, '')).status, 403);
+  const opened = await stored(await save(url, snapshot, member.cookie));
+  assert.notEqual(period(opened).openedAt, clientTimestamp);
 
-  ledger.entries.push(entry('reimbursement', 100, founder.user, admin.user));
-  assert.equal((await save(url, savedSnapshot, founder.cookie)).status, 403);
-  const reimbursed = await save(url, savedSnapshot, admin.cookie);
-  assert.equal(reimbursed.status, 200);
-  const reimbursedSnapshot = await reimbursed.json();
-  assert.equal(reimbursedSnapshot.workspace.projects[0].finance.entries[2].amountMinor, 100);
-  assert.equal((await save(url, savedSnapshot, admin.cookie)).status, 409);
+  period(opened).members.push({ id: legacyMember.user.id, name: legacyMember.user.name });
+  const joined = await stored(await save(url, opened, legacyMember.cookie));
+  const spoofed = structuredClone(joined);
+  period(spoofed).expenses.push(expense(legacyMember.user, 10_000));
+  assert.equal((await save(url, spoofed, member.cookie)).status, 403);
+
+  period(joined).expenses.push(expense(member.user, 10_000));
+  const spent = await stored(await save(url, joined, member.cookie));
+  assert.notEqual(period(spent).expenses[0].createdAt, clientTimestamp);
+
+  const legacyMutation = structuredClone(spent);
+  legacyMutation.workspace.projects[0].finance = {
+    currency: 'USD',
+    entries: [{
+      id: randomUUID(), kind: 'expense', memberId: admin.user.id, memberName: admin.user.name,
+      amountMinor: 500, date: entryDate, description: 'Discontinued finance write', createdAt: clientTimestamp,
+      recordedById: admin.user.id, recordedByName: admin.user.name,
+    }],
+  };
+  assert.equal((await save(url, legacyMutation, admin.cookie)).status, 403);
 
   const trusted = await startApp({ ...pg, AUTH_MODE: 'trusted' });
   assert.equal((await (await fetch(`${trusted}/api/session`)).json()).mode, 'trusted');
-  const unverified = structuredClone(reimbursedSnapshot);
-  unverified.workspace.projects[0].finance.entries.push(entry('contribution', 100, founder.user));
-  assert.equal((await save(trusted, unverified, null, '')).status, 403);
-  reimbursedSnapshot.workspace.projects[0].description = 'Trusted APQP edit';
-  assert.equal((await save(trusted, reimbursedSnapshot, null, '')).status, 200);
+  period(spent).payments.push(payment(legacyMember.user, member.user, 5_000));
+  assert.equal((await save(trusted, spent, null, '')).status, 403);
+  assert.equal((await save(url, spent, member.cookie)).status, 403);
+
+  const settled = await stored(await save(url, spent, legacyMember.cookie));
+  assert.notEqual(period(settled).payments[0].createdAt, clientTimestamp);
+  const requestedClose = structuredClone(settled);
+  period(requestedClose).closed = { at: clientTimestamp, byId: member.user.id, byName: member.user.name, carry: false };
+  assert.equal((await save(url, requestedClose, member.cookie)).status, 403);
+  period(requestedClose).closed = { at: clientTimestamp, byId: admin.user.id, byName: admin.user.name, carry: false };
+  const closed = await stored(await save(url, requestedClose, admin.cookie));
+  assert.notEqual(period(closed).closed.at, clientTimestamp);
+  assert.equal((await save(url, requestedClose, admin.cookie)).status, 409);
+  closed.workspace.projects[0].description = 'Trusted APQP edit';
+  assert.equal((await save(trusted, closed, null, '')).status, 200);
 
   async function logout(origin) {
     return fetch(`${url}/auth/logout`, {
-      method: 'POST', headers: { Cookie: founder.cookie, Origin: origin },
+      method: 'POST', headers: { Cookie: member.cookie, Origin: origin },
     });
   }
   assert.equal((await logout('https://cross-origin.test')).status, 403);
-  assert.equal((await fetch(`${url}/api/workspace`, { headers: { Cookie: founder.cookie } })).status, 200);
+  assert.equal((await fetch(`${url}/api/workspace`, { headers: { Cookie: member.cookie } })).status, 200);
   assert.equal((await logout(appOrigin)).status, 204);
-  assert.equal((await fetch(`${url}/api/workspace`, { headers: { Cookie: founder.cookie } })).status, 401);
+  assert.equal((await fetch(`${url}/api/workspace`, { headers: { Cookie: member.cookie } })).status, 401);
 
-  console.log('OIDC/PostgreSQL smoke passed for fail-closed config, replay, nonce, signature, groups, CSRF, finance roles, and logout.');
+  console.log('OIDC/PostgreSQL smoke passed for fail-closed config, replay, nonce, signature, groups, CSRF, pay-period roles, and logout.');
 } finally {
   for (const app of appProcesses) app.kill('SIGTERM');
   provider?.close();

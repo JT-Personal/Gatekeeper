@@ -22,6 +22,30 @@ const date = '2026-11-18'
 const clientTime = `${date}T12:00:00Z`
 const serverTime = `${date}T12:01:00Z`
 
+const daniel = { id: 'demo-daniel', name: 'Daniel Park' }
+const financeRecords: [FinanceEntry['kind'], number, string, string, string, { id: string; name: string }][] = [
+  ['contribution', 185_000, '2026-10-12', 'Maya’s founding contribution', 'Funding', demoFinanceActor],
+  ['contribution', 115_000, '2026-10-13', 'Daniel’s founding contribution', 'Funding', daniel],
+  ['expense', 84_640, '2026-10-26', 'Prototype housing machining and materials', 'Prototypes', demoFinanceActor],
+  ['expense', 67_000, '2026-11-04', 'Dynamometer fixture and instrumentation', 'Test equipment', daniel],
+  ['reimbursement', 37_500, '2026-11-10', 'Partial reimbursement for prototype housings', 'Prototypes', demoFinanceActor],
+  ['reimbursement', 22_500, '2026-11-11', 'Partial reimbursement for test equipment', 'Test equipment', daniel],
+  ['fund-expense', 25_000, '2026-11-16', 'Environmental lab reservation deposit', 'Testing', demoFinanceActor],
+]
+
+const legacyFinance: FinanceLedger = {
+  currency: 'USD',
+  entries: financeRecords.map(([kind, amountMinor, date, description, category, member], index) => {
+    const recorder = kind === 'reimbursement' ? demoFinanceActor : member
+    return {
+      id: `orion-drive:finance-${index + 1}`, kind, amountMinor, date, description, category,
+      memberId: member.id, memberName: member.name, recordedById: recorder.id, recordedByName: recorder.name,
+      createdAt: `${date}T15:00:00Z`,
+    }
+  }),
+}
+
+
 function record(id: string, kind: FinanceEntry['kind'], actor: FinanceActor, overrides: Partial<FinanceEntry> = {}): FinanceEntry {
   return {
     id, kind, date, amountMinor: 10_000, description: 'Prototype tooling',
@@ -39,7 +63,10 @@ function markVoid(entry: FinanceEntry, actor: FinanceActor): FinanceEntry {
 }
 
 function demo() {
-  return workspaceSchema.parse(initialWorkspace)
+  return workspaceSchema.parse({
+    ...initialWorkspace,
+    projects: [{ ...initialWorkspace.projects[0], finance: legacyFinance }],
+  })
 }
 
 test('legacy APQP workspaces open with a default empty ledger and samples round-trip', () => {

@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { z } from 'zod';
 import { workspaceSchema, type Workspace } from '../src/domain';
 import { stampFinanceChanges, validateFinanceChanges } from '../src/finance';
+import { stampPayChanges, validatePayWorkspaceChanges } from '../src/payPeriods';
 import { initialWorkspace } from '../src/seed';
 import { authenticatedUser, mountAuth } from './auth';
 import { PostgresWorkspace } from './store';
@@ -72,9 +73,11 @@ app.put('/api/workspace', express.json({ limit: '32mb' }), async (request, respo
   }
   const actor = authenticatedUser(response);
   const result = await database.write(parsed.data, (current, next) => {
-    const error = validateFinanceChanges(current, next, actor);
+    const error = validateFinanceChanges(current, next, null) ?? validatePayWorkspaceChanges(current, next, actor);
     if (error) return { error };
-    return { workspace: stampFinanceChanges(current, next, new Date().toISOString()) };
+    const savedAt = new Date().toISOString();
+    const historicalWorkspace = stampFinanceChanges(current, next, savedAt);
+    return { workspace: stampPayChanges(current, historicalWorkspace, savedAt) };
   });
   if (result.status === 'denied') {
     response.status(403).json({ code: 'finance_forbidden', error: result.error });

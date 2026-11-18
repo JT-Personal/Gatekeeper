@@ -15,6 +15,7 @@ import Finance from './FinancePage'
 import { workspaceSchema, type GateId, type Project } from './domain'
 import { createProject } from './seed'
 import { demoFinanceActor, getLedger, validateFinanceChanges } from './finance'
+import { validatePayWorkspaceChanges } from './payPeriods'
 import { EmptyState, Modal, PageHeading } from './ui'
 import { useWorkspace } from './useWorkspace'
 
@@ -24,12 +25,13 @@ const navigation = [
   { id: 'rtm', label: 'Requirements & RTM', icon: GitBranch },
   { id: 'dvpr', label: 'DVP&R Tracker', icon: FlaskConical },
   { id: 'gates', label: 'Gate Reviews', icon: ClipboardCheck },
-  { id: 'finance', label: 'Founder Finance', icon: Wallet },
+  { id: 'finance', label: 'Finance', icon: Wallet },
 ] as const
 
 type View = typeof navigation[number]['id']
 type Dialog = 'projects' | 'new-project' | 'edit-project' | 'data' | 'search' | 'help' | 'keep-draft' | null
 const PROJECT_KEY = 'gatekeeper.activeProject'
+const MEMBER_NAME_KEY = 'gatekeeper.browserMemberName'
 
 function currentView(): View {
   const id = location.hash.slice(1)
@@ -40,6 +42,10 @@ function initialProjectId() {
   try { return localStorage.getItem(PROJECT_KEY) ?? '' } catch { return '' }
 }
 
+function initialMemberName() {
+  try { return (localStorage.getItem(MEMBER_NAME_KEY) ?? '').trim().slice(0, 120) } catch { return '' }
+}
+
 function initials(owner: string) {
   return owner.trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'GK'
 }
@@ -48,6 +54,7 @@ export default function App() {
   const storage = useWorkspace()
   const { workspace, update, mode, session } = storage
   const [activeId, setActiveId] = useState(initialProjectId)
+  const [browserMemberName, setBrowserMemberName] = useState(initialMemberName)
   const [view, setView] = useState<View>(currentView)
   const [gateId, setGateId] = useState<GateId>()
   const [documentId, setDocumentId] = useState<string | null>()
@@ -63,7 +70,11 @@ export default function App() {
   const project = workspace.projects.find((item) => item.id === activeId) ?? workspace.projects[0]
   const protectedWorkspace = session?.mode === 'oidc'
   const user = session?.user
-  const canDeleteProject = mode === 'local' || !project || getLedger(project).entries.length === 0
+  const canDeleteProject = !project || (getLedger(project).entries.length === 0 && !project.payPeriods?.periods.length)
+  const actor = user ?? {
+    ...demoFinanceActor,
+    name: browserMemberName || project?.owner.trim().slice(0, 120) || demoFinanceActor.name,
+  }
 
   function open(which: Dialog) {
     setSearch('')
@@ -168,7 +179,8 @@ export default function App() {
   function confirmImport() {
     if (!pendingImport) return
     if (mode === 'server') {
-      const error = validateFinanceChanges(workspace, pendingImport.workspace, user ?? null)
+      const error = validateFinanceChanges(workspace, pendingImport.workspace, null) ??
+        validatePayWorkspaceChanges(workspace, pendingImport.workspace, user ?? null)
       if (error) {
         setImportError(error)
         return
@@ -199,7 +211,7 @@ export default function App() {
   </AuthScreen>
 
   if (protectedWorkspace && !user) return <AuthScreen title="Sign in to Gatekeeper"
-    description="Use your founder account to access the program workspace and project finances.">
+    description="Use your member account to access the program workspace and project finances.">
     <a className="button primary" href="/auth/login"><LogIn size={17} /> Sign in with Authentik</a>
   </AuthScreen>
 
@@ -212,7 +224,7 @@ export default function App() {
     </div>}
   </AuthScreen>
 
-  const accountName = user?.name ?? project?.owner ?? 'Workspace'
+  const accountName = actor.name
   const query = search.trim().toLowerCase()
   const matchedDocuments = project?.documents.filter((item) => !query ||
     [item.code, item.title, item.owner].some((value) => value.toLowerCase().includes(query))).slice(0, 7) ?? []
@@ -224,7 +236,7 @@ export default function App() {
     rtm: <RTMTable project={project} onChange={updateProject} />,
     dvpr: <DVPRTracker project={project} onChange={updateProject} />,
     gates: <GateReviews key={gateId} project={project} initialGate={gateId} onChange={updateProject} onOpenDocument={setDocumentId} />,
-    finance: <Finance project={project} onChange={updateProject} actor={user ?? demoFinanceActor}
+    finance: <Finance project={project} onChange={updateProject} actor={actor}
       readOnly={mode === 'server' && !user} />,
   }[view]
 
@@ -261,7 +273,7 @@ export default function App() {
           </nav>
           <div className="sidebar-person">
             <div className="avatar">{initials(accountName)}</div>
-            <div><strong>{accountName}</strong><span>{user ? user.role === 'admin' ? 'Finance admin' : 'Founder' : 'Program owner'}</span></div>
+            <div><strong>{accountName}</strong><span>{user ? user.role === 'admin' ? 'Finance admin' : 'Member' : 'Browser member'}</span></div>
             {user && <button className="icon-button sidebar-signout" type="button" aria-label="Sign out"
               title={storage.dirty ? 'Save or export your changes before signing out' : 'Sign out'}
               disabled={storage.dirty || signingOut} onClick={() => void signOut()}><LogOut size={17} /></button>}
@@ -309,7 +321,7 @@ export default function App() {
           {mode === 'local' && storage.localWarning && <div className="notice-bar" role="status">{storage.localWarning}</div>}
           {content ? <div key={project.id + view}>{content}</div> : (
             <>
-              <PageHeading eyebrow="WORKSPACE" title="Projects" description="Manage engineering work and founder finances for each development program." />
+              <PageHeading eyebrow="WORKSPACE" title="Projects" description="Manage engineering work and shared expenses for each development program." />
               <section className="panel"><EmptyState title="Create a project" description="Each project starts with the standard APQP document set."
                 action={<button className="button primary" onClick={() => open('new-project')}><Plus size={17} /> New project</button>} /></section>
             </>
@@ -364,6 +376,15 @@ export default function App() {
           </button>}
         </div>
         {storage.connectionError && <p role="alert" className="form-error">{storage.connectionError}</p>}
+        {mode === 'local' && <BrowserMemberForm name={actor.name} onSave={(name) => {
+          setBrowserMemberName(name)
+          try {
+            localStorage.setItem(MEMBER_NAME_KEY, name)
+            setNotice('Member name saved.')
+          } catch {
+            setNotice('Member name updated for this tab.')
+          }
+        }} />}
         <div className="settings-backup">
           <h3>Workspace backup</h3>
           <p className="muted">{mode === 'server'
@@ -405,7 +426,7 @@ export default function App() {
           <p><GitBranch size={19} /><span><strong>Establish traceability</strong>Link a system requirement to a DFMEA failure mode, then link a DVP&R test to that mode.</span></p>
           <p><FlaskConical size={19} /><span><strong>Record verification</strong>A requirement passes when all the tests linked through its failure modes pass. Any failed test marks it failed.</span></p>
           <p><List size={19} /><span><strong>Review a gate</strong>Approve or release its mandatory documents before recording sign-off.</span></p>
-          <p><Wallet size={19} /><span><strong>Track founder funding</strong>Record contributions and out-of-pocket expenses. Finance admins can record fund spending and reimbursements.</span></p>
+          <p><Wallet size={19} /><span><strong>Split project expenses</strong>Join the pay period, record what you paid, and log transfers between members to settle balances.</span></p>
         </div>
       </Modal>}
 
@@ -477,4 +498,18 @@ function AuthScreen({ title, description, children }: { title: string; descripti
       {children && <div className="auth-actions">{children}</div>}
     </section>
   </main>
+}
+
+function BrowserMemberForm({ name, onSave }: { name: string; onSave: (name: string) => void }) {
+  const [draft, setDraft] = useState(name)
+  return <form className="settings-backup browser-member-form" onSubmit={(event) => {
+    event.preventDefault()
+    if (draft.trim()) onSave(draft.trim())
+  }}>
+    <label className="field">Member name
+      <input className="input" value={draft} onChange={(event) => setDraft(event.target.value)}
+        maxLength={120} required />
+    </label>
+    <button className="button secondary" type="submit" disabled={!draft.trim()}>Save member name</button>
+  </form>
 }

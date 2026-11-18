@@ -15,9 +15,11 @@ type AuthSettings =
     clientSecret: string;
     origin: string;
     allowedGroup: string;
+    allowLegacyGroup: boolean;
     adminGroup: string;
   };
 
+const legacyMemberGroup = 'gatekeeper-founders';
 const sessionCookie = '__Host-gatekeeper-session';
 const attemptCookie = '__Host-gatekeeper-oidc';
 const sessionLifetime = 8 * 60 * 60 * 1000;
@@ -105,11 +107,15 @@ function readSettings(hasDatabase: boolean, env: NodeJS.ProcessEnv): AuthSetting
   const origin = originUrl(env.AUTH_APP_URL).origin;
   const clientId = env.AUTH_CLIENT_ID?.trim();
   const clientSecret = env.AUTH_CLIENT_SECRET;
-  const allowedGroup = env.AUTH_ALLOWED_GROUP?.trim() || 'gatekeeper-founders';
+  const configuredGroup = env.AUTH_ALLOWED_GROUP?.trim();
+  const allowedGroup = configuredGroup || 'gatekeeper-members';
+  const allowLegacyGroup = !configuredGroup;
   const adminGroup = env.AUTH_ADMIN_GROUP?.trim() || 'gatekeeper-admins';
   if (!clientId || !clientSecret) throw new Error('Set AUTH_CLIENT_ID and AUTH_CLIENT_SECRET.');
-  if (allowedGroup === adminGroup) throw new Error('Set distinct AUTH_ALLOWED_GROUP and AUTH_ADMIN_GROUP values.');
-  return { mode, issuer, clientId, clientSecret, origin, allowedGroup, adminGroup };
+  if (allowedGroup === adminGroup || (allowLegacyGroup && adminGroup === legacyMemberGroup)) {
+    throw new Error('Set distinct AUTH_ALLOWED_GROUP and AUTH_ADMIN_GROUP values.');
+  }
+  return { mode, issuer, clientId, clientSecret, origin, allowedGroup, allowLegacyGroup, adminGroup };
 }
 
 function httpsUrl(value: string | undefined, name: string): URL {
@@ -182,7 +188,8 @@ function createOidcService(settings: Extract<AuthSettings, { mode: 'oidc' }>, da
   // Configuration changes invalidate existing sessions and any in-flight callbacks.
   const realm = tokenHash(JSON.stringify([
     settings.issuer.href, settings.clientId, settings.clientSecret, settings.origin,
-    settings.allowedGroup, settings.adminGroup,
+    // Keep the original default realm so active members can continue their existing sessions.
+    settings.allowLegacyGroup ? legacyMemberGroup : settings.allowedGroup, settings.adminGroup,
   ]));
   let cachedConfiguration: Promise<oidc.Configuration> | undefined;
 
@@ -266,8 +273,9 @@ function createOidcService(settings: Extract<AuthSettings, { mode: 'oidc' }>, da
         name ??= claimName(profile);
       }
 
-      const role = groups?.includes(settings.adminGroup) ? 'admin' :
-        groups?.includes(settings.allowedGroup) ? 'founder' : undefined;
+      const isMember = groups?.includes(settings.allowedGroup) ||
+        (settings.allowLegacyGroup && groups?.includes(legacyMemberGroup));
+      const role = groups?.includes(settings.adminGroup) ? 'admin' : isMember ? 'founder' : undefined;
       if (!role) {
         authPage(response, 403, 'Your Authentik account needs a Gatekeeper access group.');
         return;

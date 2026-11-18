@@ -1,5 +1,6 @@
 import { newId, type DocumentRecord, type DocumentStatus, type FailureMode, type GateId, type Project, type Requirement, type VerificationTest, type Workspace } from './domain.ts'
-import { demoFinanceActor, type FinanceEntry } from './finance.ts'
+import { demoFinanceActor } from './finance.ts'
+import type { PayExpense } from './payPeriods.ts'
 
 type DocumentDefinition = {
   code: string
@@ -153,27 +154,45 @@ const tests: Omit<VerificationTest, 'id'>[] = [
 demo.tests = tests.map((test) => ({ ...test, id: test.code.toLowerCase() }))
 demo.signoffs = [{ gate: 1, by: 'Maya Chen', at: '2026-10-09T14:30:00Z', note: 'Approved for design and development.' }]
 
-const daniel = { id: 'demo-daniel', name: 'Daniel Park' }
-const financeRecords: [FinanceEntry['kind'], number, string, string, string, { id: string; name: string }][] = [
-  ['contribution', 185_000, '2026-10-12', 'Maya’s founding contribution', 'Funding', demoFinanceActor],
-  ['contribution', 115_000, '2026-10-13', 'Daniel’s founding contribution', 'Funding', daniel],
-  ['expense', 84_640, '2026-10-26', 'Prototype housing machining and materials', 'Prototypes', demoFinanceActor],
-  ['expense', 67_000, '2026-11-04', 'Dynamometer fixture and instrumentation', 'Test equipment', daniel],
-  ['reimbursement', 37_500, '2026-11-10', 'Partial reimbursement for prototype housings', 'Prototypes', demoFinanceActor],
-  ['reimbursement', 22_500, '2026-11-11', 'Partial reimbursement for test equipment', 'Test equipment', daniel],
-  ['fund-expense', 25_000, '2026-11-16', 'Environmental lab reservation deposit', 'Testing', demoFinanceActor],
+const periodMembers = [
+  { id: demoFinanceActor.id, name: demoFinanceActor.name },
+  { id: 'demo-daniel', name: 'Daniel Park' },
+  { id: 'demo-sofia', name: 'Sofia Patel' },
 ]
+const openedBy = { openedById: demoFinanceActor.id, openedByName: demoFinanceActor.name }
 
-demo.finance = {
+function sampleExpense(id: string, memberId: string, amountMinor: number, date: string, description: string, category: string): PayExpense {
+  return { id, memberId, amountMinor, date, description, category, createdAt: date + 'T15:00:00Z' }
+}
+
+demo.payPeriods = {
   currency: 'USD',
-  entries: financeRecords.map(([kind, amountMinor, date, description, category, member], index) => {
-    const recorder = kind === 'reimbursement' ? demoFinanceActor : member
-    return {
-      id: `${demo.id}:finance-${index + 1}`, kind, amountMinor, date, description, category,
-      memberId: member.id, memberName: member.name, recordedById: recorder.id, recordedByName: recorder.name,
-      createdAt: `${date}T15:00:00Z`,
-    }
-  }),
+  periods: [
+    {
+      id: 'orion-october-2026', label: 'October 2026', openedAt: '2026-10-01T15:00:00Z', ...openedBy,
+      members: periodMembers,
+      expenses: [
+        sampleExpense('orion-exp-01', 'demo-maya', 90_000, '2026-10-14', 'Prototype housing machining', 'Prototyping'),
+        sampleExpense('orion-exp-02', 'demo-daniel', 45_000, '2026-10-22', 'Test fixture materials', 'Materials'),
+      ],
+      payments: [{
+        id: 'orion-payment-01', fromId: 'demo-sofia', toId: 'demo-maya', amountMinor: 30_000,
+        date: '2026-10-31', note: 'Partial transfer for October expenses',
+        recordedById: 'demo-sofia', recordedByName: 'Sofia Patel', createdAt: '2026-10-31T17:30:00Z',
+      }],
+      closed: { at: '2026-11-01T14:30:00Z', byId: demoFinanceActor.id, byName: demoFinanceActor.name, carry: true },
+    },
+    {
+      id: 'orion-november-2026', label: 'November 2026', openedAt: '2026-11-01T14:30:00Z', ...openedBy,
+      members: periodMembers,
+      expenses: [
+        sampleExpense('orion-exp-03', 'demo-maya', 45_000, '2026-11-04', 'Dynamometer instrumentation rental', 'Testing'),
+        sampleExpense('orion-exp-04', 'demo-daniel', 18_000, '2026-11-07', 'Prototype fasteners and inserts', 'Materials'),
+        sampleExpense('orion-exp-05', 'demo-sofia', 12_000, '2026-11-12', 'Environmental chamber time', 'Testing'),
+      ],
+      payments: [],
+    },
+  ],
 }
 
 export const initialWorkspace: Workspace = { schemaVersion: 1, projects: [demo] }
